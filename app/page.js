@@ -1,6 +1,32 @@
 'use client';
 import { useState } from 'react';
 
+async function compressImage(file, maxDim = 1920, quality = 0.82) {
+  try {
+    const bitmap = await createImageBitmap(file);
+    let { width, height } = bitmap;
+    if (width > maxDim || height > maxDim) {
+      const ratio = Math.min(maxDim / width, maxDim / height);
+      width = Math.round(width * ratio);
+      height = Math.round(height * ratio);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bitmap, 0, 0, width, height);
+    const blob = await new Promise((resolve) =>
+      canvas.toBlob(resolve, 'image/jpeg', quality)
+    );
+    if (!blob || blob.size >= file.size) return file;
+    return new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), {
+      type: 'image/jpeg',
+    });
+  } catch (e) {
+    return file;
+  }
+}
+
 export default function Home() {
   const [files, setFiles] = useState([]);
   const [status, setStatus] = useState('idle'); // idle | uploading | success | error
@@ -13,29 +39,48 @@ export default function Home() {
     setStatus('uploading');
     setMessage('');
 
-    const formData = new FormData();
-    for (const file of files) {
-      formData.append('files', file);
+    let successCount = 0;
+    let firstErrorMsg = null;
+
+    for (let i = 0; i < files.length; i++) {
+      setMessage(`Yükleniyor... (${i + 1}/${files.length})`);
+      try {
+        const compressed = await compressImage(files[i]);
+        const formData = new FormData();
+        formData.append('files', compressed);
+
+        const res = await fetch('/api/upload', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (res.ok) {
+          successCount++;
+        } else {
+          const data = await res.json().catch(() => ({}));
+          if (!firstErrorMsg) {
+            firstErrorMsg = data.error || `Sunucu hatası (${res.status})`;
+          }
+        }
+      } catch (err) {
+        if (!firstErrorMsg) {
+          firstErrorMsg = err?.message || 'Bilinmeyen bağlantı hatası';
+        }
+      }
     }
 
-    try {
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData,
-      });
-      const data = await res.json();
-
-      if (res.ok) {
-        setStatus('success');
-        setMessage(`${data.uploaded.length} fotoğraf başarıyla yüklendi. Teşekkürler! 💛`);
-        setFiles([]);
-      } else {
-        setStatus('error');
-        setMessage(data.error || 'Bir hata oluştu, tekrar dener misin?');
-      }
-    } catch (err) {
+    if (successCount === files.length) {
+      setStatus('success');
+      setMessage(`${successCount} fotoğraf başarıyla yüklendi. Teşekkürler! 💛`);
+      setFiles([]);
+    } else if (successCount > 0) {
       setStatus('error');
-      setMessage('Bağlantı hatası oluştu, tekrar dener misin?');
+      setMessage(
+        `${successCount}/${files.length} fotoğraf yüklendi, bazıları başarısız oldu (${firstErrorMsg}). Tekrar dener misin?`
+      );
+    } else {
+      setStatus('error');
+      setMessage(`Yükleme başarısız oldu: ${firstErrorMsg}. Tekrar dener misin?`);
     }
   }
 
